@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  demucs:
+    build:
+      context: ../../../src/workers/separation
+      dockerfile: Dockerfile
+    environment:
+      - DEMUCS_MODEL=htdemucs
+      - DEMUCS_DEVICE=cpu
+    volumes:
+      # Mount root-level audio dirs into container
+      - ../../../audio_inputs:/app/audio_inputs
+      - ../../../audio_outputs:/app/audio_outputs
+    working_dir: /app
+    command: ["python", "separate.py", "PLACEHOLDER"]  # overridden by `docker compose run`
+
+  tagger:
+    build:
+      context: ../../../src/workers/tagging
+      dockerfile: Dockerfile
+    volumes:
+      - ../../../audio_outputs:/app/audio_outputs
+    working_dir: /app
+    command: ["python", "tag_stems.py", "PLACEHOLDER"]  # overridden by run
+
+  tempo_key:
+    build:
+      context: ../../../src/workers/tempo_key
+      dockerfile: Dockerfile
+    volumes:
+      - ../../../audio_inputs:/app/audio_inputs
+      - ../../../audio_outputs:/app/audio_outputs
+    working_dir: /app
+    command: ["python", "tempo_key.py", "PLACEHOLDER"]  # overridden by run 

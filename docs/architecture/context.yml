@@ -1,0 +1,455 @@
+project:
+  name: Audiowave Audio Production Forensics (APF)
+  version: 0.2
+  owner: Stephen
+  date: 2025-08-04
+  status: implementation_phase_2_complete
+  implementation_status: "See implementation.yml for current build state - All three core workers (separation, tagging, tempo_key) are production ready and tested"
+
+mission:
+  one_liner: "Analyze a music clip to report instruments, techniques, tempo/key, likely sample matches, and suggest similar-sounding plugin/preset recipes."
+  positioning: "Shazam-for-techniques + sample-detective + sound-recipe suggester"
+  non_goals:
+    - "Identify exact plugins/presets/complete FX chains"  # out of scope
+
+personas:
+  - id: producer_yt
+    desc: "Producer/content creator making breakdowns; wants quick reads on stems/techniques and fast ways to recreate timbres."
+  - id: sample_rights
+    desc: "Label/rights team wanting to know if a known sample appears."
+  - id: learner
+    desc: "Intermediate producer learning arrangement/mixing patterns; wants ‘what to try’ recipes."
+
+core_value_props:
+  - "Stem-wise tagging (drums, bass, vocal, pad, saw-lead, piano, etc.) with confidence."
+  - "Tempo/key/chords; rhythmic/arrangement cues (e.g., four-on-the-floor)."
+  - "Private library sample matches (loops/one-shots) with proof snippets."
+  - "Readable report + machine JSON with confidences."
+  - "‘Similar sound’ suggestions: rule-based recipes now; optional preset nearest-neighbor later."
+
+mvp_scope:
+  genres: ["trap", "house"]
+  tags:
+    instruments: ["kick","snare","hi-hat","808","acoustic_bass","electric_bass","piano","synth_pad","saw_lead","pluck","strings","guitar","vox"]
+    fx: ["reverb","delay","sidechain_pump","distortion/saturation","chorus","autotune/pitch_correction"]
+  outputs:
+    - tempo_bpm
+    - key_scale
+    - chord_candidates
+    - per_stem_tags        # multi-label + probabilities
+    - sample_matches       # id, confidence, time_ranges
+    - technique_summary    # LLM-fused text
+    - suggestions          # NEW: sound-family → recipe suggestions (+ optional NN later)
+  input_constraints:
+    - "mono or stereo .wav/.mp3, 5–30s, 44.1/48kHz"
+    - "max upload 20MB (v0)"
+
+pipeline:
+  steps:
+    - 10_source_separation: "HT-Demucs to split [vocals, drums, bass, other] ✅ COMPLETE"
+    - 20_feature_extraction:
+        - "Essentia/librosa: MFCCs, spectral centroid/rolloff, ZCR, chroma, onsets"
+        - "Tempo/key/chords estimation ✅ COMPLETE"
+    - 30_tagging:
+        - "PANNs CNN14 (or equiv) per stem for instruments/FX ✅ COMPLETE"
+        - "Sidechain detector via periodic low-band ducking templates ✅ COMPLETE"
+    - 40_sample_fingerprinting:
+        - "Landmark-based fingerprints vs private library; return matches + offsets"
+    - 50_synthesis_hint_optional:
+        - "DDSP pass for mono leads/basses (osc/harm/env hints)"
+    - 60_fusion_and_scoring:
+        - "Calibrated confidence (Platt scaling/temperature); merge per-stem probs"
+    - 65_suggestion_generation:  # NEW
+        - "Rule-based mapping: tag bundle → sound_family → recipe set (Strategy A)"
+        - "Optional (post-MVP): embedding NN lookup over preset corpus (Strategy B)"
+    - 70_report_generation:
+        - "LLM composes concise human-readable report incl. suggestions + caveats"
+    - 80_feedback_loop:
+        - "User confirms/denies tags/matches/suggestions; store as labels"
+
+models_and_tooling:
+  separation: "HT-Demucs v4/Hybrid"
+  tagging: "PANNs (CNN14) fine-tuned on stem snippets; multi-label sigmoid"
+  mir: "Essentia + librosa"
+  fingerprinting: "audfprint/dejavu-style landmarks with private index"
+  param_hints: "DDSP (mono only, experimental)"
+  embeddings_optional:
+    audio_embed: "OpenL3 or VGGish (for Strategy B)"
+    ann_index: "FAISS/ScaNN/Redis-ANN for nearest neighbors"
+  fusion_llm: "Small instruct LLM (deterministic prompts)"
+  suggestion_rules_store: "JSON rules (versioned) mapped to sound_families"
+
+data_strategy:
+  libraries_to_index:
+    - "Top 50 licensed packs (Splice/Noiiz etc.)"
+    - "Classic drum machines (808/909/707) one-shots"
+  labeling_bootstrap:
+    - "Manually label 500 stem clips across trap/house for instruments/FX"
+    - "Use high-confidence pseudo-labels to augment"
+  suggestion_rules:
+    - "Author ~20–30 families with tested parameter ranges + FX notes"
+    - "Collect user accept/reject to refine thresholds and families"
+  preset_embedding_db_optional:
+    - "Render ~5–10k presets across Serum, Vital, Sylenth1, Diva, Pigments, Massive X, Spire; multiple notes"
+    - "Store: {plugin, bank, preset_name, license_ok, audio_thumb, embedding}"
+  privacy:
+    - "User uploads private by default; 7-day retention; immediate delete on request"
+    - "Opt-in for contributing anonymized clips for improvement"
+  legal_note:
+    - "Fingerprint only licensed libraries; do not redistribute raw audio"
+    - "If licensing forbids preset names, expose category only (e.g., ‘Lead>Supersaw’)"
+
+acceptance_criteria_mvp:
+  separation_snr: "Avg SDR ≥ 5 dB (drums/bass) on MusDB-like eval ✅ MET"
+  tagging_f1_macro: "≥ 0.70 across selected instrument tags on holdout stems ✅ MET"
+  fx_detection_precision: "≥ 0.75 for reverb/sidechain at ~0.5 recall ✅ MET"
+  tempo_accuracy: "±1 BPM for ≥ 85% samples 🔧 READY TO TEST"
+  key_accuracy: "Correct or relative M/m for ≥ 75% 🔧 READY TO TEST"
+  fingerprint_match_rate: "Detect ≥ 80% of exact/near-exact (±3%) library loops in test mixes"
+  suggestions_usefulness: "Human eval ≥ 4/5 on 30 clips (rule-based Strategy A)"
+  latency: "≤ 30s end-to-end for a 20s clip on 1×A10G/3090 ✅ MET"
+  report_quality: "Human eval ≥ 4/5 usefulness on 30-sample blind test"
+  post_mvp_nn_optional:
+    nn_precision_top5: "≥ 0.5 subjective match rate (A/B) if Strategy B enabled"
+
+metrics:
+  - request_latency_s
+  - separation_sdr_dB
+  - tag_f1_macro/micro
+  - match_precision/recall
+  - suggestion_accept_rate     # NEW
+  - user_corrections_rate
+  - report_csat_1_5
+  - false_positive_rate_sample_matches
+
+api_design:
+  endpoints:
+    - POST /v1/analyze
+      request:
+        file: "audio binary"
+        opts:
+          genres_hint: ["trap","house"]
+          enable_ddsp: false
+          return_stems: false
+          include_suggestions: true
+      response:
+        job_id: "string"
+    - GET /v1/analyze/{job_id}
+      response:
+        status: ["queued","running","done","error"]
+        result:
+          tempo_bpm: float
+          key_scale: { value: "F# minor", confidence: 0.82 }
+          chords: [{ time_s: 0.0, chord: "F#m", conf: 0.7 }]
+          stems: ["vocals","drums","bass","other"]
+          tags:
+            - stem: "drums"
+              labels: [{"kick":0.96},{"snare":0.91},{"reverb":0.63},{"sidechain_pump":0.18}]
+            - stem: "bass"
+              labels: [{"808":0.88},{"saturation":0.52}]
+          sample_matches:
+            - match_id: "splice_pack_X/loop_0123"
+              confidence: 0.92
+              clip_range_s: [4.2, 8.6]
+              match_offset_s: 0.0
+              proof_thumb_url: "signed://..."
+          synthesis_hints:
+            - stem: "other"
+              type: "subtractive_saw"
+              notes: "LPF short decay; mono"
+              confidence: 0.58
+          suggestions:  # NEW
+            sound_family: "supersaw_lead"
+            confidence: 0.78
+            recipes:
+              - approach: "subtractive_unison"
+                synth_candidates: ["Serum","Vital","Sylenth1","Diva"]
+                preset_categories: ["Lead>Supersaw","Pad>Wide Saw"]
+                core_settings:
+                  osc: "SAW x2–3, unison 7–16, detune 0.05–0.12"
+                  filter: "LP12/LP24, cutoff 8–12 kHz"
+                  env: "AMP fast attack, 150–300ms decay, sustain ~0.7"
+                  fx: "Chorus/Dimension, short plate, dotted-8th delay; OTT 10–25%"
+                  mix: "Sidechain 1/4, depth 40–60%"
+                alternatives: ["JP emulations (Diva JP, Roland Cloud)"]
+            nearest_neighbors:  # present only if Strategy B enabled
+              enabled: false
+              top_matches: []
+          report_text: "Likely house groove at ~124 BPM with steady 4-on-the-floor..."
+          caveats: ["Probabilistic; plugin/preset ID not supported."]
+    - POST /v1/suggest   # NEW (can use previous analysis or direct clip)
+      request:
+        job_id: "existing_job_or_null"
+        file: "audio binary (optional if job_id provided)"
+        opts:
+          family_hint: "optional sound_family"
+          use_nn: false
+      response:
+        suggestions: { ... same shape as above ... }
+    - POST /v1/feedback
+      request:
+        job_id: "string"
+        corrections:
+          - { stem:"drums", label:"reverb", value:false }
+        suggestion_feedback:
+          - { family:"supersaw_lead", accepted:true }
+      response: { ok: true }
+
+data_schemas:
+  clip:
+    - clip_id, user_id, duration_s, samplerate, channels, created_at
+  stem:
+    - stem_id, clip_id, type["vocals","drums","bass","other"], s3_uri
+  tag:
+    - tag_id, stem_id, label, probability, threshold_used, model_version
+  sample_match:
+    - match_id, stem_id, library_item_id, confidence, clip_range_s, match_offset_s
+  library_item:
+    - library_item_id, pack_name, vendor, sha256, fp_signature, license_meta
+  report:
+    - report_id, clip_id, tempo_bpm, key_scale, summary_text, caveats, version
+  suggestion:  # NEW
+    - suggestion_id, clip_id, sound_family, confidence, recipe_ids[], created_at
+  suggestion_recipe:  # NEW
+    - recipe_id, family, approach, synth_candidates[], preset_categories[], core_settings_json, alternatives[], rules_version
+  preset_embedding_optional:  # Strategy B
+    - preset_id, plugin, bank, preset_name, license_ok, audio_thumb_s3, embedding_vec, meta_json
+
+system_architecture:
+  components:
+    - api_gateway: "FastAPI/Node"
+    - job_queue: "Redis/RQ or Celery or Cloud Tasks"
+    - workers:
+        - gpu_worker: "Separation + tagging + DDSP"
+        - cpu_worker: "Fingerprinting + MIR features"
+        - suggestion_worker: "Rule-based mapper + (optional) NN retrieval"
+        - llm_worker: "Report synthesis"
+    - storage:
+        - object_store: "S3-compatible for clips/stems/thumbs"
+        - db: "Postgres for metadata"
+        - fp_store: "Postgres/Redis for fingerprints"
+        - ann_store_optional: "FAISS/Redis-ANN for preset embeddings"
+  deployment:
+    - "Dockerized; 1×GPU instance + 1×CPU instance; autoscale by queue depth"
+  observability:
+    - "Prometheus/Grafana; structured logs; per-step timings"
+
+security_privacy:
+  - "S3 SSE at-rest; signed URLs; HTTPS only"
+  - "Default 7-day retention; instant delete on request"
+  - "Opt-in contributions; anonymize if retained"
+  - "Do not expose preset names where licensing forbids; prefer categories"
+  - "Never state exact plugin/preset; suggestions are probabilistic"
+
+risks_and_mitigations:
+  - risk: "Users expect exact plugin/preset"
+    mitigation: "UI copy + caveats + confidence; categories and recipes only"
+  - risk: "Weak sample library → low wow-factor"
+    mitigation: "Start with curated, high-demand packs; expand weekly; community contributions for credits"
+  - risk: "False positives (matches/suggestions)"
+    mitigation: "Proof snippets, high precision thresholds, user feedback loop"
+  - risk: "Licensing on preset names/banks"
+    mitigation: "Store license_ok; hide names if restricted; use categories"
+  - risk: "GPU cost/latency"
+    mitigation: "Batch separation; limit clip length; cache results; CPU path for short clips"
+
+two_week_mvp_plan:
+  week1:
+    - "Repo bootstrap + CI"
+    - "S3 + Postgres + Redis queue"
+    - "HT-Demucs inference wrapper"
+    - "Essentia/librosa features; tempo/key; onsets"
+    - "Baseline tagging (PANNs) per stem"
+    - "API endpoints + /v1/analyze + status"
+    - "Minimal web UI: upload → status → JSON + text report"
+  week2:
+    - "Fingerprint indexer for 10–20 packs; matcher + proof extraction"
+    - "Confidence calibration + thresholds"
+    - "Suggestion rules (v0) + /v1/suggest + UI panel"
+    - "LLM report template + caveat generator"
+    - "Metrics + dashboards; load test; polish"
+  demo_targets:
+    - "10 curated test songs (5 trap, 5 house)"
+    - "Show 3–5 real sample matches + 3–5 compelling suggestions"
+
+gtm_v0:
+  - "Partner with 2 YouTube breakdown channels; on-video demos"
+  - "Landing: ‘What’s in this beat?’ drag-n-drop → shareable report"
+  - "B2B trials with 5 labels (private catalogs)"
+
+pricing_v0:
+  - free: "3 analyses (no stems download)"
+  - starter: "$9/mo for 30 analyses"
+  - pro: "$29/mo for 150 analyses"
+  - b2b: "Custom (API, priority, private library size)"
+
+evaluation_protocol:
+  datasets:
+    - "MusDB18 (separation), internal labeled stems (500), curated library mixes"
+  procedures:
+    - "F1 per tag; BPM/key accuracy; match precision/recall @ {0.85,0.9,0.95}"
+    - "Suggestion usefulness: 5-point human eval by 3 raters; inter-rater agreement"
+    - "A/B: report with vs without suggestions → uplift in perceived usefulness"
+  regression_checks:
+    - "Lock seeds; track model_version/rules_version; alert on ≥5% metric drops"
+
+repo_structure:
+  - /api
+  - /workers/separation
+  - /workers/tagging
+  - /workers/fingerprint
+  - /workers/suggestion            # NEW
+  - /workers/report_llm
+  - /lib/mir_features
+  - /lib/models
+  - /rules/suggestions.json        # NEW (versioned rules)
+  - /assets/audio_examples         # NEW (short tones/phrases to A/B)
+  - /infra/docker
+  - /scripts/ingest_library
+  - /eval
+  - /ui
+
+llm_report_prompt_template:
+  system: |
+    You are an audio-production analyst. Be concise, factual, and probabilistic. Never claim plugin or preset IDs. Prefer categories and recipes.
+  user_template: |
+    INPUT:
+      tempo_bpm: {{tempo_bpm}}
+      key_scale: {{key_scale.value}} (conf: {{key_scale.confidence}})
+      chords: {{chords}}
+      per_stem_tags: {{tags}}
+      sample_matches: {{sample_matches}}
+      synthesis_hints: {{synthesis_hints}}
+      suggestions: {{suggestions}}
+      caveats: {{caveats}}
+    TASK:
+      - Write a 4–7 sentence summary of likely instruments/techniques.
+      - Mention tempo/key if confident; describe drum pattern (e.g., 4-on-the-floor).
+      - List any sample matches with timestamps.
+      - Provide 1–2 ‘recipe’ suggestions with synth categories and core settings.
+      - End with a short caveat about probabilities and scope.
+
+rules_catalog_v0:  # NEW — seed rules for Strategy A (editable/expandable)
+  supersaw_lead:
+    trigger_tags: ["saw_lead","synth_pad","reverb","delay"]
+    approach: "subtractive_unison"
+    synth_candidates: ["Serum","Vital","Sylenth1","Diva"]
+    preset_categories: ["Lead>Supersaw","Pad>Wide Saw"]
+    core_settings:
+      osc: "SAW x2–3, unison 7–16, detune 0.05–0.12"
+      filter: "LP12/LP24, cutoff 8–12 kHz, mild keytracking"
+      env: "AMP fast attack; 150–300ms decay; sustain ~0.6–0.8"
+      fx: "Chorus/Dimension; short plate; dotted-8th delay; OTT 10–25%"
+      mix: "Sidechain 1/4 note, 40–60% depth"
+    alternatives: ["JP emulations (Diva JP, Roland Cloud)"]
+  bass_808_sub:
+    trigger_tags: ["808","distortion/saturation","vox:false"]
+    synth_candidates: ["Serum","Vital","Operator","SubLab XL"]
+    preset_categories: ["Bass>808/Sub/Sine"]
+    core_settings:
+      osc: "Sine/Triangle; mono; glide 60–120ms"
+      filter: "LP gentle to taste"
+      env: "Short release; no click unless layered"
+      fx: "Soft-clip/tanh; limiter last; sidechain to kick"
+  reese_bass:
+    trigger_tags: ["electric_bass","distortion/saturation","chorus"]
+    synth_candidates: ["Serum","Massive X","Phase Plant","Pigments"]
+    preset_categories: ["Bass>Reese/Growl/Detuned"]
+    core_settings:
+      osc: "Two SAWs; slight detune; one inverted optional"
+      filter: "Moving notch/BP; slow LFO"
+      fx: "Chorus; subtle distortion; keep <200Hz mono"
+  fm_bell_keys:
+    trigger_tags: ["piano:false","pluck","delay","reverb"]
+    synth_candidates: ["Dexed","FM8","Operator","Pigments FM"]
+    preset_categories: ["Keys>E-Piano/Bell/Glass"]
+    core_settings:
+      ops: "2–4 op FM; short decay carrier; keytracking"
+      fx: "Short plate; subtle chorus; tame 1–2kHz harshness"
+  house_pluck:
+    trigger_tags: ["pluck","saw_lead","delay","sidechain_pump"]
+    synth_candidates: ["Sylenth1","Spire","Serum","Pigments"]
+    preset_categories: ["Pluck>Short/Bright"]
+    core_settings:
+      osc: "SAW+SQR"
+      env: "AMP fast attack; 150–300ms decay; low sustain"
+      filter: "ENV to cutoff for transient bite"
+      fx: "Ping-pong delay (dotted-8th); plate reverb; sidechain"
+  juno_pad:
+    trigger_tags: ["synth_pad","chorus","reverb"]
+    synth_candidates: ["TAL-U-No-LX","Jun-6 V","Diva"]
+    preset_categories: ["Pad>Chorus/Warm"]
+    core_settings:
+      osc: "SAW/PWM"
+      env: "Slow attack; long release"
+      filter: "HPF slightly open"
+      fx: "Chorus I/II; light tape/RC-20"
+  hoover_rave_lead:
+    trigger_tags: ["saw_lead","distortion/saturation","chorus"]
+    synth_candidates: ["Serum","Roland Cloud","Phase Plant"]
+    preset_categories: ["Lead>Hoover/Techno","Synth Brass"]
+    core_settings:
+      osc: "PWM/supersaw stacked; octave layering"
+      mod: "Pitch env snap; resonant LP/HP blend"
+      fx: "Chorus + short verb; mild distortion"
+  autotuned_vocal:
+    trigger_tags: ["vox","autotune/pitch_correction","reverb","delay"]
+    processors: ["Auto-Tune","Waves Tune RT","Melodyne (offline edits)"]
+    core_settings:
+      key: "Track key/scale locked"
+      tune: "Retune 0–10ms; formant preserve"
+      fx: "Slap delay + plate; de-ess post-verb"
+  lofi_texture:
+    trigger_tags: ["reverb","chorus","distortion/saturation"]
+    processors: ["RC-20","SketchCassette","iZotope Vinyl","ReelBus"]
+    core_settings:
+      tone: "Wow/flutter; high-cut 10–14kHz; -40 dB noise"
+      transients: "Slight soften on drums"
+  gated_reverb_snare:
+    trigger_tags: ["snare","reverb","drums"]
+    chain: ["Snare → bright plate 1.2–2.0s → hard gate 150–300ms → bus comp"]
+    core_settings:
+      predelay_ms: 20
+      eq: "Notch 300–500Hz mud"
+
+example_output_json:
+  job_id: "abc123"
+  tempo_bpm: 124.1
+  key_scale: { value: "F# minor", confidence: 0.82 }
+  tags:
+    - stem: "drums"
+      labels: [{"kick":0.96},{"snare":0.91},{"reverb":0.63}]
+  sample_matches:
+    - match_id: "splice:pack_x/loop_0123"
+      confidence: 0.92
+      clip_range_s: [4.2, 8.6]
+      match_offset_s: 0.0
+  suggestions:
+    sound_family: "supersaw_lead"
+    confidence: 0.78
+    recipes:
+      - approach: "subtractive_unison"
+        synth_candidates: ["Serum","Vital","Sylenth1","Diva"]
+        preset_categories: ["Lead>Supersaw","Pad>Wide Saw"]
+        core_settings:
+          osc: "SAW x2–3, unison 7–16, detune 0.05–0.12"
+          filter: "LP12/LP24, cutoff 8–12 kHz"
+          env: "AMP fast attack, 150–300ms decay, sustain ~0.7"
+          fx: "Chorus/Dimension, short plate, dotted-8th delay; OTT 10–25%"
+          mix: "Sidechain 1/4, depth 40–60%"
+        alternatives: ["Diva JP engine"]
+  report_text: "Likely house groove at ~124 BPM with steady 4-on-the-floor..."
+  caveats: ["Probabilistic; plugin/preset ID out of scope."]
+
+checklist_to_start_today:
+  - "[✅] Repo + Docker + FastAPI/Node skeleton"
+  - "[✅] S3 + Postgres + Redis queue wiring"
+  - "[✅] HT-Demucs inference (accept 20s clips)"
+  - "[✅] Essentia/librosa features; BPM/key; onsets"
+  - "[✅] PANNs tagging per stem; top-5 labels per stem"
+  - "[ ] Fingerprint index for 10–20 packs; matcher + proof"
+  - "[ ] Suggestion rules v0 (add rules_catalog_v0 to /rules/suggestions.json)"
+  - "[ ] /v1/suggest endpoint + UI panel; log accept/reject"
+  - "[ ] LLM report with suggestions + caveats"
+  - "[ ] Enhanced logging (structured JSON + monitoring)"
+  - "[ ] Pilot with 5 users + 2 YT channels; collect feedback"

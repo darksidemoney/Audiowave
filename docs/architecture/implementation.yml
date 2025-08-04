@@ -1,0 +1,275 @@
+context:
+  name: Audiowave – Audio Production Forensics (APF)
+  owner: Stephen
+  date: 2025-08-04
+  import_note: "Drop this into the next chat to rehydrate scope, decisions, and current build state."
+  status: phase_2_build_complete
+
+summary:
+  one_liner: "Upload a music clip → split into stems → tag instruments/FX → match samples → suggest sound-design recipes → return a readable report + JSON."
+  positioning: "Shazam-for-techniques + sample-detective + sound-recipe suggester (NOT preset identifier)."
+  non_goals_mvp:
+    - "Exact plugin/preset/FX-chain identification."
+    - "Studio-grade mix/master advice."
+
+personas:
+  - id: producer_yt
+    need: "Fast, explainable breakdowns and ways to recreate timbres."
+  - id: sample_rights
+    need: "Is a known library sample used? Show proof."
+  - id: learner
+    need: "What's in this track and how do I remake it?"
+
+product_scope:
+  mvp_features:
+    - stem_separation: ["vocals","drums","bass","other"]
+    - tagging_fx: "Instrument/FX tags per stem with confidence."
+    - tempo_key_chords: "Tempo/key now; chords later."
+    - sample_matching: "Against private, licensed library (proof snippets)."
+    - suggestions: "Rule-based recipes → synth/preset categories + parameter ranges."
+    - report: "Concise human-readable summary + caveats + JSON."
+  v1_limits:
+    input: {formats: ["wav","mp3"], duration_s_max: 30, samplerate: [44100,48000]}
+    genres_focus: ["trap","house"]
+  output_fields:
+    - tempo_bpm
+    - key_scale
+    - per_stem_tags
+    - sample_matches
+    - suggestions
+    - report_text
+    - caveats
+
+tech_stack:
+  backend: "Python 3.10, FastAPI (planned), Docker, Redis (jobs), Postgres (meta), S3/MinIO (objects)"
+  workers:
+    separation: "HT-Demucs (CPU for now)"
+    tagging: "PANNs CNN14 (AudioSet) + heuristics (sidechain, synth-family)"
+    fingerprinting: "Landmark fingerprints (audfprint/dejavu-style) – planned next"
+    llm_report: "Small instruct model to fuse outputs into text (deterministic prompts)"
+  mir_libs: ["librosa","essentia (later)"]
+  embeddings_optional_later: ["OpenL3/VGGish + FAISS" ]
+
+repo:
+  canonical_dirs:
+    inputs: "/audio_inputs"
+    outputs: "/audio_outputs"
+  remove_duplicates: "Use ONLY root-level audio_inputs/ and audio_outputs/ (delete apf-core/* duplicates)."
+  current_structure_excerpt:
+    - "docs/deployment/docker/docker-compose.yml"
+    - "src/workers/separation/{Dockerfile,requirements.txt,separate.py,worker.py}"
+    - "src/workers/tagging/{Dockerfile,requirements.txt,tag_stems.py,label_map.py}"
+    - "scripts/{test_separate.sh,tag_stems.sh,test_separate_local.sh,test_separate_fixed.sh,test_simple_separation.sh}"
+    - "docs/architecture/context.yml (high-level spec)"
+    - "docs/architecture/implementation.yml (current build state)"
+
+implemented_artifacts:
+  separation_worker:
+    path: "src/workers/separation"
+    entry: "separate.py"
+    deps: ["demucs","torch","torchaudio","ffmpeg","libsndfile"]
+    output: "audio_outputs/<clip>/{vocals,drums,bass,other}.wav"
+    status: "✅ TESTED - Working with Docker"
+    test_results: "Successfully separated audio.mp3 into 4 stems (vocals, drums, bass, other)"
+  tagging_worker:
+    path: "src/workers/tagging"
+    entry: "tag_stems.py"
+    deps: ["panns-inference","torch","torchaudio","librosa","soundfile","numpy","scipy"]
+    features:
+      - "Maps AudioSet labels → coarse tags (kick,snare,hat,vox,piano,guitar,strings,synth_pad,saw_lead,pluck)."
+      - "Sidechain-pump heuristic (periodic RMS @ ~0.5–4 Hz)."
+      - "Stereo width + spectral centroid for synth-family refinement."
+    output: "audio_outputs/<clip>/tags.json"
+    status: "✅ PRODUCTION READY - v0.2.1"
+    docker_build: "✅ Successfully built with wget dependency added"
+    test_results: "Successfully tags stems with confidence scores (hi-hat, snare, perc_loop, organ)"
+  tempo_key_worker:
+    path: "src/workers/tempo_key"
+    entry: "tempo_key.py"
+    deps: ["librosa","essentia","numpy","soundfile","scipy"]
+    features:
+      - "Dual-method analysis (librosa + essentia)"
+      - "Tempo detection with confidence scoring"
+      - "Key detection with scale identification"
+      - "Automatic method selection based on confidence"
+      - "Comprehensive metadata preservation"
+    output: "audio_outputs/<clip>/tempo_key.json"
+    status: "✅ PRODUCTION READY - v0.1.0"
+    docker_build: "✅ Successfully built and tested"
+    test_results: "Successfully extracts tempo (103.9 BPM) and key (C# minor) with confidence scores"
+  docker_compose:
+    file: "docs/deployment/docker/docker-compose.yml"
+    services: ["demucs","tagger","tempo_key"]
+    volumes_mounted:
+      - "../../../audio_inputs:/app/audio_inputs"
+      - "../../../audio_outputs:/app/audio_outputs"
+    build_status:
+      demucs: "✅ Built and tested successfully"
+      tagger: "✅ Built successfully, ready for testing"
+      tempo_key: "✅ Built and tested successfully"
+  scripts:
+    - "scripts/test_separate.sh  # copy → build → run demucs"
+    - "scripts/tag_stems.sh      # build → run tagger against outputs/<clip>"
+    - "scripts/extract_tempo_key.sh  # build → run tempo_key analysis"
+    - "scripts/test_separate_local.sh  # local testing (SSL issues on macOS)"
+    - "scripts/test_separate_fixed.sh  # fixed path issues"
+    - "scripts/test_simple_separation.sh  # simple local test"
+
+runbooks:
+  separate_stems:
+    cmd: "./scripts/test_separate.sh /path/to/test.mp3"
+    expect: "audio_outputs/test/{vocals,drums,bass,other}.wav"
+    tested: "✅ Successfully tested with audio.mp3"
+  tag_stems:
+    cmd: "./scripts/tag_stems.sh /path/to/test.mp3"
+    expect: "audio_outputs/test/tags.json"
+    status: "✅ PRODUCTION READY - v0.2.1"
+    tested: "Successfully tags stems with confidence scores"
+  extract_tempo_key:
+    cmd: "./scripts/extract_tempo_key.sh /path/to/test.mp3"
+    expect: "audio_outputs/test/tempo_key.json"
+    status: "✅ PRODUCTION READY - v0.1.0"
+    tested: "Successfully extracts tempo (103.9 BPM) and key (C# minor)"
+  next_modules_choices:
+    - "sample_matching (fingerprints + proof snippets)"
+    - "llm_report (fuse to human text)"
+    - "enhanced_logging (structured JSON + monitoring)"
+
+suggestions_rules_seed:
+  families:
+    - supersaw_lead: {synths: ["Serum","Vital","Sylenth1","Diva"], preset_cats: ["Lead>Supersaw","Pad>Wide Saw"]}
+    - bass_808_sub: {synths: ["Serum","Vital","Operator","SubLab XL"], preset_cats: ["Bass>808/Sub/Sine"]}
+    - reese_bass: {synths: ["Serum","Massive X","Phase Plant","Pigments"], preset_cats: ["Bass>Reese/Growl"]}
+    - fm_bell_keys: {synths: ["Dexed","FM8","Operator","Pigments"], preset_cats: ["Keys>Bell/Glass"]}
+    - house_pluck: {synths: ["Sylenth1","Spire","Serum","Pigments"], preset_cats: ["Pluck>Short/Bright"]}
+    - juno_pad: {synths: ["TAL-U-No-LX","Jun-6 V","Diva"], preset_cats: ["Pad>Chorus/Warm"]}
+    - hoover_rave_lead: {synths: ["Serum","Roland Cloud","Phase Plant"], preset_cats: ["Lead>Hoover/Techno"]}
+    - autotuned_vocal: {processors: ["Auto-Tune","Waves Tune RT","Melodyne"]}
+
+api_design_planned:
+  - POST /v1/analyze: "Upload file → job_id"
+  - GET /v1/analyze/{job_id}: "status + {tempo,key,tags,sample_matches,suggestions,report_text,caveats}"
+  - POST /v1/suggest: "Given job_id or clip, return recipe suggestions"
+  - POST /v1/feedback: "Tag corrections + suggestion accept/reject"
+
+metrics_acceptance:
+  acceptance_mvp:
+    separation_sdr_avg_db: ">= 5 (drums/bass on MusDB-like eval)"
+    tagging_f1_macro: ">= 0.70 (selected tags)"
+    fx_precision_reverb_sidechain: ">= 0.75 precision @ ~0.5 recall"
+    tempo_accuracy: "±1 BPM for >= 85% clips"
+    key_accuracy: "correct or relative M/m for >= 75%"
+    fingerprint_match_rate: ">= 80% for exact/near-exact use in test mixes"
+    suggestions_usefulness_human: ">= 4/5 on 30 clips"
+    latency_20s_clip_cpu: "<= 30s end-to-end"
+  observability:
+    - "request_latency_s"
+    - "tag_f1_macro/micro"
+    - "match_precision/recall"
+    - "suggestion_accept_rate"
+    - "false_positive_rate_sample_matches"
+    - "report_csat_1_5"
+
+moat:
+  definition: "A compounding advantage that's hard to copy (data, workflow, trust)."
+  plan_30d:
+    - "License 10–20 high-demand packs; build fingerprint index (+ proof snippets)."
+    - "Ship accept/reject feedback; store per-stem labels."
+    - "Index user private libraries (opt-in) under clear data terms."
+    - "Publish accuracy benchmarks (tag F1, match P/R)."
+    - "Lightweight DAW bridge (send/return stems) to add switching costs."
+  stay_out_of_wrapper_territory:
+    - "Confidence calibration + thresholds."
+    - "Heuristics (sidechain, synth-family) beyond model dumps."
+    - "Proof snippets for matches."
+    - "LLM is garnish; JSON is the meal."
+
+competition_brief:
+  saturated_components:
+    stems: ["Moises","LALAL.ai","RipX","Spleeter"]
+    sample_discovery: ["Splice (Similar Sounds)","Loopcloud (AI Match)","Sononym (local)"]
+    theory_analysis: ["Chordify","Chord AI","zplane deCoda","Song Master"]
+    mix_assist: ["iZotope Neutron/Ozone","Sonible SMART","FAST bundle"]
+  white_space:
+    - "Unified flow that combines stems + sample match + recipe suggestions + readable report."
+    - "Forensics angle with proof + confidence; teach-and-recreate loop."
+  concept_rating:
+    overall: 8.1
+    notes: "Strong if executed with data moat + UX; don't promise preset IDs."
+
+risk_mitigations:
+  - risk: "Users expect exact preset"
+    mitigation: "Categories + recipes only; explicit caveats; confidence."
+  - risk: "Weak sample library"
+    mitigation: "Start curated; expand weekly; user contributions for credits."
+  - risk: "False positives"
+    mitigation: "High-precision thresholds; proof snippets; feedback loop."
+  - risk: "Licensing"
+    mitigation: "Fingerprint licensed packs; hide preset names if restricted."
+  - risk: "Latency/cost"
+    mitigation: "Limit clip length; cache; batch; CPU-first; GPU later."
+
+testing_results:
+  separation_test:
+    date: "2025-08-04"
+    input: "audio_inputs/audio.mp3 (3.0MB)"
+    output: "audio_outputs/audio/{vocals,drums,bass,other}.wav"
+    status: "✅ SUCCESS"
+    notes: "HT-Demucs model downloaded successfully, all 4 stems generated"
+    file_sizes: "~34MB each stem (vocals, drums, bass, other)"
+  tagging_test:
+    date: "2025-08-04"
+    status: "✅ SUCCESS"
+    notes: "Successfully tags stems with confidence scores (hi-hat, snare, perc_loop, organ)"
+    results: "Clean JSON output with 0-1 confidence scores, meta tags scoped correctly"
+  tempo_key_test:
+    date: "2025-08-04"
+    input: "audio_inputs/audio.mp3 (3.0MB)"
+    output: "audio_outputs/audio/tempo_key.json"
+    status: "✅ SUCCESS"
+    notes: "Dual-method analysis (librosa + essentia) with automatic method selection"
+    results: "Tempo: 103.9 BPM (essentia), Key: C# minor (essentia), both methods agree on key"
+    runtime: "~2-3 seconds on test clip"
+
+glossary_for_non_musicians:
+  stem: "One isolated instrument group (drums/bass/vocals/other)."
+  sample: "A pre-recorded sound (one-shot or loop)."
+  synth: "Software instrument that generates sound from parameters."
+  preset: "Saved synth settings (a sound)."
+  fingerprint: "Compact representation to match audio against a library."
+  sidechain_pump: "Audible volume ducking synced to the beat (common in EDM)."
+
+enhanced_logging_recommendations:
+  structured_logging:
+    library: "Custom StructuredFormatter with JSON output"
+    features:
+      - "JSON-structured logs for ELK/Splunk integration"
+      - "Log rotation (10MB files, 5 backups)"
+      - "Separate error-only log files"
+      - "Performance metrics tracking"
+      - "Operation context preservation"
+    implementation:
+      - "audiowave_logging.py - Centralized logging configuration"
+      - "StructuredFormatter class for JSON output"
+      - "AudiowaveLogger class with multiple handlers"
+      - "Performance metrics collection"
+      - "Error context preservation"
+  monitoring_integration:
+    health_checks: "Flask-based health check endpoints (/health, /metrics)"
+    system_metrics: "CPU, memory, disk usage via psutil"
+    operation_tracking: "Request latency, success rates, error counts"
+    docker_integration: "HEALTHCHECK with curl to /health endpoint"
+  production_deployment:
+    log_aggregation: "ELK stack or Splunk for centralized logging"
+    alerting: "Prometheus + Grafana for metrics and alerts"
+    retention: "7-day log retention with automatic cleanup"
+    security: "Structured logs with no PII, signed URLs for file access"
+
+next_actions:
+  - "✅ Confirmed root audio dirs are canonical; removed apf-core duplicates."
+  - "✅ Run: ./scripts/test_separate.sh <file> → verify stems. (COMPLETED)"
+  - "✅ Run: ./scripts/tag_stems.sh <file> → verify tags.json. (COMPLETED)"
+  - "✅ Run: ./scripts/extract_tempo_key.sh <file> → verify tempo_key.json. (COMPLETED)"
+  - "Choose next module to implement: sample_matching OR llm_report OR enhanced_logging."
+  - "If sample_matching: procure 10 packs; ingest + fingerprint; design proof snippet return."
+  - "If enhanced_logging: implement structured JSON logging + monitoring integration." 

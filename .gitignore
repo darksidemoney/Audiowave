@@ -1,0 +1,38 @@
+# Audio outputs (generated files)
+audio_outputs/
+
+# Audio inputs (keep directory but ignore files)
+audio_inputs/*
+!audio_inputs/.gitkeep
+
+# Python cache
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Docker
+.dockerignore
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+*.temp 

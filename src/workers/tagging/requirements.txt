@@ -1,0 +1,7 @@
+panns-inference
+torch
+torchaudio
+librosa
+soundfile
+numpy
+scipy 
