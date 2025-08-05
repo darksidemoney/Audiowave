@@ -19,7 +19,7 @@ COARSE_TAGS = {
 # Labels that add zero signal - filter these out
 STOP_LABELS = {
     "music",  # always top-1, adds zero signal
-    "speech",  # unless specifically vocal content
+    # Removed "speech" so it can be mapped to vocal tags
 }
 
 # Comprehensive drum label mappings
@@ -107,6 +107,8 @@ AUDIOSET_TO_COARSE = {
     "808": "sub_808",  # catch 808 references
     "sub": "sub_808",
     "sub bass": "sub_808",
+    "bass": "synth_bass",  # Generic bass catch
+    "low frequency": "synth_bass",  # Low frequency content
 
     # Keys / Piano / Organ - KEEP USEFUL ONES
     "piano": "piano",
@@ -128,9 +130,17 @@ AUDIOSET_TO_COARSE = {
     "cello": "lead",
     "strings": "lead",
 
-    # Synths (broad)
-    "synthesizer": "pluck",    # default to pluck, refine with heuristics
-    "sampler": "pluck",
+    # Synths (broad) - EXPANDED
+    "synthesizer": "synth_pad",    # default to pad, refine with heuristics
+    "sampler": "synth_pad",
+    "electronic": "synth_pad",      # catch electronic music
+    "electronic music": "synth_pad", # catch electronic music
+    "melody": "saw_lead",           # melodic content
+    "lead": "saw_lead",             # lead sounds
+    "pad": "synth_pad",             # pad sounds
+    "atmosphere": "synth_pad",       # atmospheric content
+    "ambient": "synth_pad",         # ambient content
+    "texture": "synth_pad",         # textural content
 
     # Vocals - EXPANDED with subtypes
     "singing": "vox_lead",
@@ -138,7 +148,7 @@ AUDIOSET_TO_COARSE = {
     "choir": "vox_harmony",
     "vocal": "vox",
     "a capella": "vox_lead",
-    "speech": "vox_rap",
+    "speech": "vox_lead",  # Changed from vox_rap to vox_lead
     "rap": "vox_rap",
     "chant": "vox_harmony",
 
@@ -149,10 +159,20 @@ AUDIOSET_TO_COARSE = {
     "distortion": "impact",
     "overdrive": "impact",
     "saturation": "impact",
+    
+    # Additional Electronic Music Mappings
+    "techno": "synth_pad",
+    "house": "synth_pad",
+    "trance": "synth_pad",
+    "ambient music": "synth_pad",
+    "electronic": "synth_pad",
+    "synthesizer": "synth_pad",
+    "keyboard": "synth_pad",
+    "synthesizer (musical)": "synth_pad",
 }
 
 # Confidence calibration and filtering
-def calibrate_confidence(scores_dict, min_score=0.15):
+def calibrate_confidence(scores_dict, min_score=0.10):  # Lowered from 0.15 to 0.10
     """
     Quick confidence calibration: min-max rescale per-stem, 
     then zero-out anything < threshold

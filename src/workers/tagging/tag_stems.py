@@ -65,17 +65,52 @@ def stereo_width_estimate(path):
     width = 1.0 - max(min(corr, 1.0), -1.0)  # high width = low correlation
     return float(width)
 
-def map_audioset_to_coarse(top_preds):
+def analyze_stem_characteristics(y, sr):
+    """Enhanced spectral analysis for stem-specific tagging"""
+    centroid = librosa.feature.spectral_centroid(y=y, sr=sr)[0].mean()
+    rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)[0].mean()
+    zero_crossing = librosa.feature.zero_crossing_rate(y)[0].mean()
+    
+    # Rhythm analysis for drums
+    try:
+        tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+        onset_strength = librosa.onset.onset_strength(y=y, sr=sr).mean()
+    except:
+        tempo = 120.0
+        onset_strength = 0.0
+    
+    return {
+        "centroid": float(centroid),
+        "rolloff": float(rolloff),
+        "zero_crossing": float(zero_crossing),
+        "tempo": float(tempo),
+        "onset_strength": float(onset_strength)
+    }
+
+def map_audioset_to_coarse_stem_aware(top_preds, stem_type):
     """
+    Enhanced mapping with stem-aware logic
     top_preds: list[(label_str, score_float)]
+    stem_type: "drums", "bass", "vocals", "other"
     returns dict coarse_tag -> score (max-aggregated)
     """
     out = {}
     
     if DEBUG:
+        print(f"DEBUG: Stem type: {stem_type}")
         print(f"DEBUG: Top AudioSet predictions:")
-        for lab, score in top_preds[:10]:  # Show top 10
+        for lab, score in top_preds[:10]:
             print(f"  {lab}: {score}")
+    
+    # Stem-specific keyword mappings
+    STEM_KEYWORDS = {
+        "drums": ["kick", "snare", "hi-hat", "drum", "percussion", "cymbal", "clap", "thunk"],
+        "bass": ["bass", "808", "sub", "low frequency", "electric bass"],
+        "vocals": ["singing", "speech", "vocal", "rap", "choir", "chant"],
+        "other": ["synthesizer", "piano", "organ", "guitar", "strings", "melody", "pad"]
+    }
+    
+    keywords = STEM_KEYWORDS.get(stem_type, [])
     
     for lab, score in top_preds:
         # Skip stop labels that add zero signal
@@ -84,18 +119,32 @@ def map_audioset_to_coarse(top_preds):
         
         lab_l = lab.lower()
         
-        # Try drum labels first (higher priority)
-        drum_mapped = None
-        for key, coarse in DRUM_LABELS.items():
-            if key in lab_l:
-                drum_mapped = coarse
+        # Try stem-specific keywords first (higher priority)
+        stem_mapped = None
+        for keyword in keywords:
+            if keyword in lab_l:
+                stem_mapped = map_keyword_to_tag(keyword, stem_type)
                 break
         
-        if drum_mapped:
-            out[drum_mapped] = max(out.get(drum_mapped, 0.0), float(score))
+        if stem_mapped:
+            out[stem_mapped] = max(out.get(stem_mapped, 0.0), float(score))
             if DEBUG:
-                print(f"DEBUG: Drum mapping - {lab} -> {drum_mapped} (score: {score})")
+                print(f"DEBUG: Stem mapping - {lab} -> {stem_mapped} (score: {score})")
             continue
+        
+        # Try drum labels (for drums stem)
+        if stem_type == "drums":
+            drum_mapped = None
+            for key, coarse in DRUM_LABELS.items():
+                if key in lab_l:
+                    drum_mapped = coarse
+                    break
+            
+            if drum_mapped:
+                out[drum_mapped] = max(out.get(drum_mapped, 0.0), float(score))
+                if DEBUG:
+                    print(f"DEBUG: Drum mapping - {lab} -> {drum_mapped} (score: {score})")
+                continue
         
         # Try instrument labels
         instrument_mapped = None
@@ -120,6 +169,123 @@ def map_audioset_to_coarse(top_preds):
     
     return out
 
+def map_keyword_to_tag(keyword, stem_type):
+    """Map keywords to appropriate tags based on stem type"""
+    keyword = keyword.lower()
+    
+    if stem_type == "drums":
+        if "kick" in keyword:
+            return "kick"
+        elif "snare" in keyword:
+            return "snare"
+        elif "hi-hat" in keyword or "hi hat" in keyword or "cymbal" in keyword:
+            return "hi-hat"
+        elif "clap" in keyword:
+            return "clap"
+        else:
+            return "perc_loop"
+    
+    elif stem_type == "bass":
+        if "808" in keyword or "sub" in keyword:
+            return "sub_808"
+        elif "bass" in keyword:
+            return "synth_bass"
+        else:
+            return "synth_bass"
+    
+    elif stem_type == "vocals":
+        if "rap" in keyword:
+            return "vox_rap"
+        elif "singing" in keyword:
+            return "vox_lead"
+        elif "choir" in keyword or "chant" in keyword:
+            return "vox_harmony"
+        else:
+            return "vox"
+    
+    elif stem_type == "other":
+        if "piano" in keyword:
+            return "piano"
+        elif "organ" in keyword:
+            return "organ"
+        elif "guitar" in keyword:
+            return "pluck"
+        elif "strings" in keyword:
+            return "lead"
+        elif "synthesizer" in keyword or "synth" in keyword:
+            return "synth_pad"
+        else:
+            return "synth_pad"
+    
+    return None
+
+def add_spectral_fallbacks(tags, characteristics, stem_type):
+    """Add spectral analysis-based fallback tags"""
+    
+    centroid = characteristics["centroid"]
+    onset_strength = characteristics["onset_strength"]
+    
+    if stem_type == "drums":
+        # Spectral analysis for drums
+        if centroid > 4000:  # Very bright percussion
+            tags["hi-hat"] = max(tags.get("hi-hat", 0.0), 0.6)
+        elif centroid > 2500:  # Medium bright
+            tags["snare"] = max(tags.get("snare", 0.0), 0.5)
+        elif centroid > 1500:  # Lower bright
+            tags["kick"] = max(tags.get("kick", 0.0), 0.4)
+        
+        # Rhythm-based fallback
+        if onset_strength > 0.3 and not any(tag in tags for tag in ["kick", "snare", "hi-hat", "perc_loop"]):
+            tags["perc_loop"] = 0.5
+    
+    elif stem_type == "bass":
+        # Spectral analysis for bass
+        if centroid < 2000:  # Low frequency
+            tags["sub_808"] = max(tags.get("sub_808", 0.0), 0.6)
+        else:  # Higher frequency bass
+            tags["synth_bass"] = max(tags.get("synth_bass", 0.0), 0.5)
+    
+    elif stem_type == "other":
+        # Spectral analysis for other instruments
+        if centroid > 3000:
+            tags["saw_lead"] = max(tags.get("saw_lead", 0.0), 0.5)
+        elif centroid < 1500:
+            tags["synth_pad"] = max(tags.get("synth_pad", 0.0), 0.5)
+        else:
+            tags["pluck"] = max(tags.get("pluck", 0.0), 0.4)
+    
+    return tags
+
+def smart_confidence_calibration(tags, stem_type):
+    """Better confidence calibration with stem awareness"""
+    
+    if not tags:
+        return {}
+    
+    calibrated = {}
+    
+    # Preserve high confidence scores
+    for tag, score in tags.items():
+        if score > 0.7:  # High confidence - preserve
+            calibrated[tag] = score
+        elif score > 0.3:  # Medium confidence - slight boost
+            calibrated[tag] = min(1.0, score * 1.2)
+        elif score > 0.15:  # Low confidence - keep but don't boost
+            calibrated[tag] = score
+        # Filter out very low confidence
+    
+    # Ensure minimum tags per stem type
+    if stem_type == "drums" and not any(t in calibrated for t in ["kick", "snare", "hi-hat", "perc_loop"]):
+        calibrated["perc_loop"] = 0.4  # Fallback
+    
+    if stem_type == "bass" and not any(t in calibrated for t in ["sub_808", "synth_bass", "reese"]):
+        calibrated["synth_bass"] = 0.4  # Fallback
+    
+    if stem_type == "other" and not any(t in calibrated for t in ["synth_pad", "saw_lead", "pluck"]):
+        calibrated["synth_pad"] = 0.4  # Fallback
+    
+    return calibrated
+
 def separate_meta_content_tags(tags_dict):
     """
     Separate meta tags (stereo_wide, sidechain_pump) from content tags (instruments)
@@ -138,9 +304,23 @@ def separate_meta_content_tags(tags_dict):
     return content_tags, meta_tags
 
 def tag_stem(path, at_model, global_sidechain=False):
+    # Determine stem type from filename
+    stem_name = Path(path).stem.lower()
+    if "drum" in stem_name:
+        stem_type = "drums"
+    elif "bass" in stem_name:
+        stem_type = "bass"
+    elif "vocal" in stem_name:
+        stem_type = "vocals"
+    else:
+        stem_type = "other"
+    
     y, sr = load_audio_mono(path, sr=32000)
     centroid = spectral_centroid_hz(y, 32000)
     width = stereo_width_estimate(path)
+    
+    # Enhanced spectral analysis
+    characteristics = analyze_stem_characteristics(y, sr)
 
     # PANNs inference
     (clipwise_output, _) = at_model.inference(y[None, :])
@@ -150,7 +330,11 @@ def tag_stem(path, at_model, global_sidechain=False):
     preds = [(labels[i], float(clipwise_output[i])) for i in idxs if clipwise_output[i] >= MIN_SCORE]
     preds = preds[:DEFAULT_TOPK]
 
-    coarse = map_audioset_to_coarse(preds)
+    # Stem-aware mapping
+    coarse = map_audioset_to_coarse_stem_aware(preds, stem_type)
+
+    # Add spectral fallbacks
+    coarse = add_spectral_fallbacks(coarse, characteristics, stem_type)
 
     # synth refinement
     fam = refine_synth_family(preds, centroid_hz=centroid, is_wide_stereo=(width>0.25))
@@ -167,32 +351,15 @@ def tag_stem(path, at_model, global_sidechain=False):
     if width > 0.25:
         coarse["stereo_wide"] = min(1.0, width)
 
-    # Apply confidence calibration
-    calibrated = calibrate_confidence(coarse, min_score=0.15)
-    
-    # Add drum-specific heuristics based on spectral centroid
-    if "perc_loop" in calibrated and centroid > 2000:  # High centroid = bright percussion
-        if centroid > 3000:
-            calibrated["hi-hat"] = max(calibrated.get("hi-hat", 0.0), 0.60)  # Very bright = hi-hat
-        elif centroid > 2500:
-            calibrated["snare"] = max(calibrated.get("snare", 0.0), 0.50)  # Medium bright = snare
-        else:
-            calibrated["kick"] = max(calibrated.get("kick", 0.0), 0.40)  # Lower bright = kick
-    
-    # Ensure organ detection works - preserve organ if detected
-    if "organ" in coarse and "organ" not in calibrated:
-        calibrated["organ"] = max(coarse.get("organ", 0.0), 0.47)  # Ensure organ is preserved
-    
-    # Add kick/snare heuristics for drums stem (high centroid suggests bright percussion)
-    if "perc_loop" in calibrated and centroid > 3000:  # Very bright percussion
-        calibrated["snare"] = max(calibrated.get("snare", 0.0), 0.45)  # Likely snare at this brightness
+    # Apply smart confidence calibration
+    calibrated = smart_confidence_calibration(coarse, stem_type)
     
     # Separate meta and content tags
     content_tags, meta_tags = separate_meta_content_tags(calibrated)
     
     # Take top K content tags (allow multiple per stem)
     top_content = sorted(content_tags.items(), key=lambda x: -x[1])[:TOP_K_TAGS]
-    top_content = [{"label": k, "score": round(v, 2)} for k, v in top_content if v >= CONTENT_MIN_SCORE]  # min confidence + round to 2 decimals
+    top_content = [{"label": k, "score": round(v, 2)} for k, v in top_content if v >= CONTENT_MIN_SCORE]
     
     # Format meta tags
     meta_tags_list = [{"label": k, "score": v} for k, v in sorted(meta_tags.items(), key=lambda x: -x[1])]
